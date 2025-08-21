@@ -1,7 +1,7 @@
 package com.example.service.impl;
 
 import com.example.mapper.SupplierInfoMapper;
-import com.example.pojo.SupplierInfo;
+import com.example.dao.SupplierInfo;
 import com.example.service.SupplierInfoService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -15,5 +15,10 @@ public class SupplierInfoServiceImpl implements SupplierInfoService {
     @Override
     public SupplierInfo getSupplierInfoById(Long id) {
         return supplierInfoMapper.getSupplierInfoById(id);
+    }
+
+    @Override
+    public SupplierInfo getSupplierInfoBySupplierId(long supplierId) {
+        return supplierInfoMapper.getSupplierInfoBySupplierId(supplierId);
     }
 }

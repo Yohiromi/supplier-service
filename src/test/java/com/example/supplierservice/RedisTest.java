@@ -19,5 +19,11 @@ public class RedisTest {
         ValueOperations<String, String> ops = stringRedisTemplate.opsForValue();
         ops.set("name", "kai");
     }
+    @Test
+    public void testGet() {
+        ValueOperations<String, String> ops = stringRedisTemplate.opsForValue();
+        String res = ops.get("supplier:risk:28");
+
+    System.out.println(res);}
 }
 
