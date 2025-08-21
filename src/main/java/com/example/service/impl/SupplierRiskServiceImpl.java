@@ -39,6 +39,7 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
 
     @Override
     public void identifyAndSaveRisk(long supplierId) {
+        //调用风险策略接口去识别风险
         // 1. 获取供应商信息
         SupplierInfo supplierInfo = supplierInfoService.getSupplierInfoBySupplierId(supplierId);
         if (supplierInfo == null) {

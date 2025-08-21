@@ -12,6 +12,12 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+/**
+ * 这是策略模块
+ * 通过比对传递模拟的天眼查信息挨个判断是否又对应的risk
+ * 然后通过buildRisk组成一个SupplierRisk对象返回
+ * **/
+
 
 @Service
 public class RiskStrategyServiceImpl implements RiskStrategyService {
