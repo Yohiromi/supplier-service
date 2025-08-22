@@ -5,7 +5,9 @@ import com.example.dao.RiskType;
 import com.example.dao.SupplierInfo;
 import com.example.dao.SupplierRisk;
 import com.example.service.RiskStrategyService;
+import com.example.utils.TianyanchaLimiter;
 import com.example.utils.TianyanchaMockAPI;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -23,9 +25,15 @@ import java.util.*;
 public class RiskStrategyServiceImpl implements RiskStrategyService {
 
     private static final Set<String> NORMAL_STATUSES = Set.of("Active", "Operating", "Open", "Normal");
+    @Autowired
+    private TianyanchaLimiter tianyanchaLimiter;
 
     @Override
     public SupplierRisk executeStrategy(RiskType riskType, SupplierInfo supplierInfo) {
+        // QPS 限流：调用天眼查前检查<10
+        if (!tianyanchaLimiter.tryAcquire()) {
+            throw new RuntimeException("调用天眼查频率过高，请稍后再试.");
+        }
         Map<String, Object> data = TianyanchaMockAPI.queryRiskInfo(supplierInfo.getOrganizationCode());
 
         if (data == null || data.isEmpty()) return null;

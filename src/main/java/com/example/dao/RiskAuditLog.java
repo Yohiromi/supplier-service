@@ -17,7 +17,7 @@ public class RiskAuditLog {
     private String action;                     // 动作（CHECK/CACHE_HIT/BLOCK/PASS 等）
     private Integer resultCode;                // 结果码（0成功，非0失败/降级）
 
-    // JSON 字段：命中标签快照
+    // 先用string接收，然后用JsonUtils转成Json
     private String riskTags;
 
     private String dataSource;                 // 数据来源（live/cache）

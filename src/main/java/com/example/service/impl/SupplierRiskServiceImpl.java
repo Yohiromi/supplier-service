@@ -3,6 +3,7 @@ package com.example.service.impl;
 import com.example.dao.RiskType;
 import com.example.dao.SupplierInfo;
 import com.example.dao.SupplierRisk;
+import com.example.dto.SupplierRiskDTO;
 import com.example.mapper.SupplierRiskMapper;
 import com.example.service.RiskStrategyService;
 import com.example.service.SupplierInfoService;
@@ -12,6 +13,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -38,10 +40,11 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
     }
 
     @Override
-    public void identifyAndSaveRisk(long supplierId) {
+    public List<SupplierRiskDTO> identifyAndSaveRisk(long supplierId) {
         //调用风险策略接口去识别风险
         // 1. 获取供应商信息
         SupplierInfo supplierInfo = supplierInfoService.getSupplierInfoBySupplierId(supplierId);
+        List<SupplierRiskDTO> supplierRiskDTOList = new ArrayList<>();
         if (supplierInfo == null) {
             throw new RuntimeException("SupplierInfo not found for ID: " + supplierId);
         }
@@ -52,7 +55,12 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
         // 检查是否已经存在缓存（防止重复识别）
         if (stringRedisTemplate.hasKey(redisKey)) {
             System.out.println("Risk info for supplier " + supplierId + " already cached.");
-            return;
+            List<SupplierRisk> supplierRiskList = JsonUtils.toSupplierRiskList(stringRedisTemplate.opsForValue().get(redisKey));
+            for (SupplierRisk supplierRisk : supplierRiskList) {
+                SupplierRiskDTO supplierRiskDTO = new SupplierRiskDTO(supplierInfo,supplierRisk);
+                supplierRiskDTOList.add(supplierRiskDTO);
+            }
+            return supplierRiskDTOList;
         }
 
         // 收集所有识别出的风险
@@ -67,6 +75,8 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                 // 插入数据库
                 supplierRiskMapper.insert(result);
                 riskList.add(result);
+                SupplierRiskDTO supplierRiskDTO = new SupplierRiskDTO(supplierInfo,result);
+                supplierRiskDTOList.add(supplierRiskDTO);
                 //插入日志
             }
         }
@@ -76,6 +86,7 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
             String json = JsonUtils.SupplierRiskListToJson(riskList);
             stringRedisTemplate.opsForValue().set(redisKey, json, 1, TimeUnit.HOURS);
         }
+        return supplierRiskDTOList;
     }
 
     @Override
@@ -90,10 +101,22 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
     @Override
     public List<SupplierRisk> searchRisks(long supplierInfoId) {
         //先查询redis
-        //如果命中写入日志然后返回
-        //如果没有命中
-        //查询数据库
-        //然后重新写入redis
-        return supplierRiskMapper.searchRisks(supplierInfoId);
+        String redisKey = "supplier:risk:" + supplierInfoId;
+        String res = stringRedisTemplate.opsForValue().get(redisKey);
+
+        if (res != null) {
+            //如果命中写入日志然后返回
+            return JsonUtils.toSupplierRiskList(res);
+        }else {
+            //如果没有命中
+            //查询数据库
+            List<SupplierRisk> supplierRiskList = supplierRiskMapper.searchRisks(supplierInfoId);
+            if (!supplierRiskList.isEmpty()) {
+                //然后重新写入redis
+                stringRedisTemplate.opsForValue().set(redisKey,JsonUtils.SupplierRiskListToJson(supplierRiskList));
+                return supplierRiskList;
+            }
+        }
+        return null;
     }
 }
