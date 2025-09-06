@@ -25,5 +25,16 @@ public class RedisTest {
         String res = ops.get("supplier:risk:28");
 
     System.out.println(res);}
+    @Test
+    public void clearAll() {
+        var keys = stringRedisTemplate.keys("*");
+        if (keys != null && !keys.isEmpty()) {
+            stringRedisTemplate.delete(keys);
+            System.out.println("Deleted all keys: " + keys.size());
+        } else {
+            System.out.println("No keys found in Redis.");
+        }
+    }
+
 }
 

@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit;
 public class GlobalRequestLimiter {
 
     // 限流器，每秒允许100个请求（QPS）
-    private final RateLimiter limiter = RateLimiter.create(10.0);
+    private final RateLimiter limiter = RateLimiter.create(100.0);
 
     /**
      * 尝试获取令牌，最多等待 timeoutMillis 毫秒

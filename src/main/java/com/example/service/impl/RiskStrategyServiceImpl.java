@@ -1,4 +1,4 @@
-package com.example.service.impl;
+/**package com.example.service.impl;
 
 import com.example.dao.RiskLevel;
 import com.example.dao.RiskType;
@@ -18,7 +18,7 @@ import java.util.*;
  * 这是策略模块
  * 通过比对传递模拟的天眼查信息挨个判断是否又对应的risk
  * 然后通过buildRisk组成一个SupplierRisk对象返回
- * **/
+ *
 
 
 @Service
@@ -30,11 +30,12 @@ public class RiskStrategyServiceImpl implements RiskStrategyService {
 
     @Override
     public SupplierRisk executeStrategy(RiskType riskType, SupplierInfo supplierInfo) {
-        // QPS 限流：调用天眼查前检查<10
-        if (!tianyanchaLimiter.tryAcquire()) {
+        // QPS 限流：调用天眼查前检查<10(是不是把天眼查接口提取出来到controller或者service，然后当作参数传过来)
+        if (!tianyanchaLimiter.tryAcquireWithTimeout(200)) {
             throw new RuntimeException("调用天眼查频率过高，请稍后再试.");
         }
         Map<String, Object> data = TianyanchaMockAPI.queryRiskInfo(supplierInfo.getOrganizationCode());
+        //加个缓存,记得空值缓存防止穿透，布隆
 
         if (data == null || data.isEmpty()) return null;
 
@@ -172,3 +173,4 @@ public class RiskStrategyServiceImpl implements RiskStrategyService {
         }
     }
 }
+**/

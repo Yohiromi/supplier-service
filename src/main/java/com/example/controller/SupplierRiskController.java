@@ -30,13 +30,13 @@ public class SupplierRiskController {
     @PostMapping("/identify")
     public Result identifyRisk(@RequestParam long supplierId) {
         try {
-            if (!globalRequestLimiter.tryAcquireWithTimeout(5000)) {
+            if (!globalRequestLimiter.tryAcquireWithTimeout(200)) {
                 System.out.println("拒绝");
                 return Result.error("Too many requests, please try again later.");
             }
             List<SupplierRiskDTO> supplierRiskDTOList = supplierRiskService.identifyAndSaveRisk(supplierId);
             return Result.success(supplierRiskDTOList);
-        } catch (Exception e) {
+        } catch (Exception e) {//记得抛出
             return Result.error("Risk identification failed: " + e.getMessage());
         }
     }
@@ -46,7 +46,7 @@ public class SupplierRiskController {
         try {
             List<SupplierRisk> supplierRisks = supplierRiskService.searchRisks(supplierInfoId);
             return Result.success(supplierRisks);
-        } catch (Exception e) {
+        } catch (Exception e) {//记得抛出
             return Result.error("Risk identification failed: " + e.getMessage());
         }
     }
