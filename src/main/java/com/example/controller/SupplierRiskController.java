@@ -28,7 +28,7 @@ public class SupplierRiskController {
 
     }
     @PostMapping("/identify")
-    public Result identifyRisk(@RequestParam long supplierId) {
+    public Result identifyRisk(@RequestParam long supplierId) throws Exception {
         try {
             if (!globalRequestLimiter.tryAcquireWithTimeout(200)) {
                 System.out.println("拒绝");
@@ -42,11 +42,21 @@ public class SupplierRiskController {
     }
 
     @GetMapping("/searchRisk")
-    public Result searchRisk(@RequestParam long supplierInfoId) {
+    public Result searchRisk(@RequestParam long supplierInfoId) throws Exception {
         try {
             List<SupplierRisk> supplierRisks = supplierRiskService.searchRisks(supplierInfoId);
             return Result.success(supplierRisks);
         } catch (Exception e) {//记得抛出
+            return Result.error("Risk identification failed: " + e.getMessage());
+
+        }
+    }
+    @GetMapping("/queryAllRisks")
+    public Result queryAllRisks() throws  Exception {
+        try {
+            List<SupplierRisk> supplierRisks = supplierRiskService.queryAllRisks();
+            return Result.success(supplierRisks);
+        } catch (Exception e) {
             return Result.error("Risk identification failed: " + e.getMessage());
         }
     }

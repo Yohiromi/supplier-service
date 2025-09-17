@@ -22,4 +22,7 @@ public interface SupplierRiskMapper {
 
     @Select("select * from supplier_risk where supplier_info_id = #{supplierInfoId}")
     List<SupplierRisk> searchRisks(long supplierInfoId);
+
+    @Select("select * from supplier_risk")
+    List<SupplierRisk> queryAllRisks();
 }

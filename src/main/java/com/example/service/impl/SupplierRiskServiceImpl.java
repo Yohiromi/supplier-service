@@ -67,10 +67,12 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
         // 3) 缓存未命中 → 查数据库；有则直接回写缓存并返回
         List<SupplierRisk> dbRisks = supplierRiskMapper.searchRisks(supplierInfo.getId());
         if (dbRisks != null && !dbRisks.isEmpty()) {
-            // 回写缓存，正常 TTL
-            stringRedisTemplate.opsForValue()
-                    .set(redisKey, JsonUtils.SupplierRiskListToJson(dbRisks), 1, TimeUnit.HOURS);
-
+            // NEW: 雪崩防护 - TTL 抖动：1h ~ 1h+5min
+            long ttlSeconds = 3600 + new java.util.Random().nextInt(300);
+            stringRedisTemplate.opsForValue().set(
+                    redisKey, JsonUtils.SupplierRiskListToJson(dbRisks),
+                    ttlSeconds, TimeUnit.SECONDS
+            );
             for (SupplierRisk r : dbRisks) {
                 dtoList.add(new SupplierRiskDTO(supplierInfo, r));
             }
@@ -122,9 +124,12 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
 
         // 7) 回写缓存
         if (!newRisks.isEmpty()) {
-            // 正常命中：写 1 小时
-            stringRedisTemplate.opsForValue()
-                    .set(redisKey, JsonUtils.SupplierRiskListToJson(newRisks), 1, TimeUnit.HOURS);
+            // NEW: 雪崩防护 - TTL 抖动：1h ~ 1h+5min
+            long ttlSeconds = 3600 + new java.util.Random().nextInt(300);
+            stringRedisTemplate.opsForValue().set(
+                    redisKey, JsonUtils.SupplierRiskListToJson(dbRisks),
+                    ttlSeconds, TimeUnit.SECONDS
+            );
         } else {
             // 没有命中：写“空缓存”，但用**短 TTL**（例如 5 分钟），避免长期污染
             stringRedisTemplate.opsForValue()
@@ -154,5 +159,10 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                     .set(key, JsonUtils.SupplierRiskListToJson(db), 1, TimeUnit.HOURS);
         }
         return db;
+    }
+
+    @Override
+    public List<SupplierRisk> queryAllRisks() {
+        return supplierRiskMapper.queryAllRisks();
     }
 }

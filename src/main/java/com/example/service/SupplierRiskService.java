@@ -14,4 +14,6 @@ public interface SupplierRiskService {
     boolean isExistRisk(long supplierInfoId, RiskType riskType);
 
     List<SupplierRisk> searchRisks(long supplierInfoId);
+
+    List<SupplierRisk> queryAllRisks();
 }
