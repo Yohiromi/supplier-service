@@ -11,6 +11,7 @@ import com.example.service.RiskFactoryService;
 import com.example.service.RiskStrategy;
 import com.example.service.SupplierInfoService;
 import com.example.service.SupplierRiskService;
+import com.example.utils.AuditLogger;
 import com.example.utils.JsonUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -35,7 +36,7 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
 
     @Autowired private RiskFactoryService riskFactory;
     @Autowired private SupplierRiskAuditLogMapper supplierRiskAuditLogMapper;
-
+    @Autowired private AuditLogger auditLogger;
     @Autowired
     @Qualifier("riskExecutor")
     private ExecutorService riskExecutor;
@@ -55,18 +56,15 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
             throw new RuntimeException("SupplierInfo not found for ID: " + supplierId);
         }
 
-        // —— 新增：本次调用的统一 requestId（贯穿整条链路）——
-        String requestId = java.util.UUID.randomUUID().toString().replace("-", "");
-
-        // 审计：CHECK
-        {
-            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "CHECK");
-            log.setRequestId(requestId);
-            supplierRiskAuditLogMapper.insert(log);
-        }
-
         List<SupplierRiskDTO> dtoList = new ArrayList<>();
         String redisKey = "supplier:risk:" + supplierInfo.getId();
+
+        // 统一 requestId,随机模拟
+        String requestId = java.util.UUID.randomUUID().toString().replace("-", "");
+
+        // 审计：CHECK（开始检查）
+        auditLogger.log(requestId, supplierInfo, "CHECK",
+                0, null, null, "start check");
 
         // 2) 先读缓存（避免空数组长期短路）
         String cached = stringRedisTemplate.opsForValue().get(redisKey);
@@ -76,12 +74,8 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                 dtoList.add(new SupplierRiskDTO(supplierInfo, r));
             }
             // 审计：CACHE_HIT
-            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "CACHE_HIT");
-            log.setRequestId(requestId);
-            log.setDataSource("cache");
-            log.setRiskTags(JsonUtils.SupplierRiskListToJson(cachedList)); // 直接存快照
-            supplierRiskAuditLogMapper.insert(log);
-
+            auditLogger.log(requestId, supplierInfo, "CACHE_HIT",
+                    0, "cache", JsonUtils.SupplierRiskListToJson(cachedList), "hit redis cache");
             return dtoList;
         }
 
@@ -97,21 +91,14 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                 dtoList.add(new SupplierRiskDTO(supplierInfo, r));
             }
             // 审计：DB_HIT
-            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "DB_HIT");
-            log.setRequestId(requestId);
-            log.setDataSource("db");
-            log.setRiskTags(JsonUtils.SupplierRiskListToJson(dbRisks));
-            supplierRiskAuditLogMapper.insert(log);
-
+            auditLogger.log(requestId, supplierInfo, "DB_HIT",
+                    0, "db", JsonUtils.SupplierRiskListToJson(dbRisks), "load from db and warm cache");
             return dtoList;
         }
 
         // 4) DB 也没有 → 并发执行各策略（LIVE_CALL）
-        {
-            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "LIVE_CALL");
-            log.setRequestId(requestId);
-            supplierRiskAuditLogMapper.insert(log);
-        }
+        auditLogger.log(requestId, supplierInfo, "LIVE_CALL",
+                0, "live", null, "evaluate via live strategies");
 
         List<CompletableFuture<SupplierRisk>> futures = Arrays.stream(RiskType.values())
                 .map(type -> {
@@ -123,7 +110,10 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                             .supplyAsync(() -> strategy.executeStrategy(supplierInfo), riskExecutor)
                             .orTimeout(2, TimeUnit.SECONDS)
                             .exceptionally(ex -> {
-                                System.err.println("[RiskTag Fail] type=" + type + ", reason=" + ex.getClass().getSimpleName());
+                                // 单策略失败不影响整体，但记一条失败日志（注意：不阻塞主链路）
+                                auditLogger.log(requestId, supplierInfo, "EVALUATE_STRATEGY_FAIL",
+                                        -1, "live", null,
+                                        "type=" + type + ", reason=" + ex.getClass().getSimpleName());
                                 return null;
                             });
                 })
@@ -146,13 +136,9 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                 .collect(java.util.stream.Collectors.toList());
 
         // 审计：EVALUATE（无论是否命中，都记录快照）
-        {
-            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "EVALUATE");
-            log.setRequestId(requestId);
-            log.setDataSource("live");
-            log.setRiskTags(JsonUtils.SupplierRiskListToJson(newRisks));
-            supplierRiskAuditLogMapper.insert(log);
-        }
+        auditLogger.log(requestId, supplierInfo, "EVALUATE",
+                0, "live", JsonUtils.SupplierRiskListToJson(newRisks),
+                "evaluate finished, hits=" + newRisks.size());
 
         // 6) 入库并构建返回
         for (SupplierRisk r : newRisks) {
@@ -160,26 +146,28 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
             dtoList.add(new SupplierRiskDTO(supplierInfo, r));
         }
 
-        // 7) 回写缓存（修正：这里应写 newRisks，而不是 dbRisks）
+        // 7) 回写缓存
         if (!newRisks.isEmpty()) {
             long ttlSeconds = 3600 + new java.util.Random().nextInt(300); // 1h ~ 1h+5min
             stringRedisTemplate.opsForValue().set(
                     redisKey, JsonUtils.SupplierRiskListToJson(newRisks),
                     ttlSeconds, TimeUnit.SECONDS
             );
+            // 审计：CACHE_WRITE（有命中时写缓存）
+            auditLogger.log(requestId, supplierInfo, "CACHE_WRITE",
+                    0, "cache", JsonUtils.SupplierRiskListToJson(newRisks), "warm cache with hits");
         } else {
             // 没有命中：空值缓存 + 短 TTL 防穿透
             stringRedisTemplate.opsForValue().set(redisKey, "[]", 5, TimeUnit.MINUTES);
+            // 审计：CACHE_WRITE_EMPTY（写空值缓存）
+            auditLogger.log(requestId, supplierInfo, "CACHE_WRITE_EMPTY",
+                    0, "cache", "[]", "no hit, write empty cache 5min");
         }
 
         // 审计：PASS（收尾）
-        {
-            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "PASS");
-            log.setRequestId(requestId);
-            log.setDetail("inserted=" + newRisks.size());
-            log.setRiskTags(JsonUtils.SupplierRiskListToJson(newRisks));
-            supplierRiskAuditLogMapper.insert(log);
-        }
+        auditLogger.log(requestId, supplierInfo, "PASS",
+                0, null, JsonUtils.SupplierRiskListToJson(newRisks),
+                "inserted=" + newRisks.size());
 
         return dtoList;
     }

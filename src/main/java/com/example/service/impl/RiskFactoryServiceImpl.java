@@ -17,7 +17,7 @@ public class RiskFactoryServiceImpl implements RiskFactoryService {
     /** Spring 会把所有实现 RiskStrategy 的 bean 注入进来 */
     public RiskFactoryServiceImpl(List<RiskStrategy> strategies) {
         for (RiskStrategy s : strategies) {
-            map.put(s.getRiskType(), s);
+            map.put(s.getRiskType(), s);//在这里进行分发
         }
     }
 
