@@ -1,9 +1,11 @@
 package com.example.service.impl;
 
+import com.example.dao.RiskAuditLog;
 import com.example.dao.RiskType;
 import com.example.dao.SupplierInfo;
 import com.example.dao.SupplierRisk;
 import com.example.dto.SupplierRiskDTO;
+import com.example.mapper.SupplierRiskAuditLogMapper;
 import com.example.mapper.SupplierRiskMapper;
 import com.example.service.RiskFactoryService;
 import com.example.service.RiskStrategy;
@@ -32,6 +34,7 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
     @Autowired private StringRedisTemplate stringRedisTemplate;
 
     @Autowired private RiskFactoryService riskFactory;
+    @Autowired private SupplierRiskAuditLogMapper supplierRiskAuditLogMapper;
 
     @Autowired
     @Qualifier("riskExecutor")
@@ -52,15 +55,33 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
             throw new RuntimeException("SupplierInfo not found for ID: " + supplierId);
         }
 
+        // —— 新增：本次调用的统一 requestId（贯穿整条链路）——
+        String requestId = java.util.UUID.randomUUID().toString().replace("-", "");
+
+        // 审计：CHECK
+        {
+            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "CHECK");
+            log.setRequestId(requestId);
+            supplierRiskAuditLogMapper.insert(log);
+        }
+
         List<SupplierRiskDTO> dtoList = new ArrayList<>();
         String redisKey = "supplier:risk:" + supplierInfo.getId();
 
         // 2) 先读缓存（避免空数组长期短路）
         String cached = stringRedisTemplate.opsForValue().get(redisKey);
         if (cached != null && !cached.isBlank() && !"[]".equals(cached.trim())) {
-            for (SupplierRisk r : JsonUtils.toSupplierRiskList(cached)) {
+            List<SupplierRisk> cachedList = JsonUtils.toSupplierRiskList(cached);
+            for (SupplierRisk r : cachedList) {
                 dtoList.add(new SupplierRiskDTO(supplierInfo, r));
             }
+            // 审计：CACHE_HIT
+            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "CACHE_HIT");
+            log.setRequestId(requestId);
+            log.setDataSource("cache");
+            log.setRiskTags(JsonUtils.SupplierRiskListToJson(cachedList)); // 直接存快照
+            supplierRiskAuditLogMapper.insert(log);
+
             return dtoList;
         }
 
@@ -75,10 +96,23 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
             for (SupplierRisk r : dbRisks) {
                 dtoList.add(new SupplierRiskDTO(supplierInfo, r));
             }
+            // 审计：DB_HIT
+            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "DB_HIT");
+            log.setRequestId(requestId);
+            log.setDataSource("db");
+            log.setRiskTags(JsonUtils.SupplierRiskListToJson(dbRisks));
+            supplierRiskAuditLogMapper.insert(log);
+
             return dtoList;
         }
 
-        // 4) 数据库也没有 → 并发执行各策略
+        // 4) DB 也没有 → 并发执行各策略（LIVE_CALL）
+        {
+            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "LIVE_CALL");
+            log.setRequestId(requestId);
+            supplierRiskAuditLogMapper.insert(log);
+        }
+
         List<CompletableFuture<SupplierRisk>> futures = Arrays.stream(RiskType.values())
                 .map(type -> {
                     RiskStrategy strategy = riskFactory.get(type);
@@ -93,12 +127,11 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                                 return null;
                             });
                 })
-                .collect(Collectors.toList());
+                .collect(java.util.stream.Collectors.toList());
 
-        // （可选）先等待全部完成（语义更清晰）
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        // 5) 汇总结果 + 判重（判重仍建议DB唯一索引兜底）
+        // 5) 汇总结果 + 判重
         List<SupplierRisk> newRisks = futures.stream()
                 .map(CompletableFuture::join)
                 .filter(Objects::nonNull)
@@ -110,16 +143,24 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                         return false;
                     }
                 })
-                .collect(Collectors.toList());
+                .collect(java.util.stream.Collectors.toList());
+
+        // 审计：EVALUATE（无论是否命中，都记录快照）
+        {
+            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "EVALUATE");
+            log.setRequestId(requestId);
+            log.setDataSource("live");
+            log.setRiskTags(JsonUtils.SupplierRiskListToJson(newRisks));
+            supplierRiskAuditLogMapper.insert(log);
+        }
 
         // 6) 入库并构建返回
         for (SupplierRisk r : newRisks) {
-            // 建议在 mapper 层使用 INSERT IGNORE 或 ON DUPLICATE KEY，结合唯一索引完全防重
             supplierRiskMapper.insert(r);
             dtoList.add(new SupplierRiskDTO(supplierInfo, r));
         }
 
-        // 7) 回写缓存 —— 这里要写 newRisks（你原来误用了 dbRisks）
+        // 7) 回写缓存（修正：这里应写 newRisks，而不是 dbRisks）
         if (!newRisks.isEmpty()) {
             long ttlSeconds = 3600 + new java.util.Random().nextInt(300); // 1h ~ 1h+5min
             stringRedisTemplate.opsForValue().set(
@@ -129,6 +170,15 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
         } else {
             // 没有命中：空值缓存 + 短 TTL 防穿透
             stringRedisTemplate.opsForValue().set(redisKey, "[]", 5, TimeUnit.MINUTES);
+        }
+
+        // 审计：PASS（收尾）
+        {
+            RiskAuditLog log = RiskAuditLogBuilders.baseLog(supplierInfo, "PASS");
+            log.setRequestId(requestId);
+            log.setDetail("inserted=" + newRisks.size());
+            log.setRiskTags(JsonUtils.SupplierRiskListToJson(newRisks));
+            supplierRiskAuditLogMapper.insert(log);
         }
 
         return dtoList;
