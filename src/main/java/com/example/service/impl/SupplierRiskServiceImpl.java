@@ -55,7 +55,7 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
         List<SupplierRiskDTO> dtoList = new ArrayList<>();
         String redisKey = "supplier:risk:" + supplierInfo.getId();
 
-        // 2) 先读缓存（但要防止被空数组长期短路）
+        // 2) 先读缓存（避免空数组长期短路）
         String cached = stringRedisTemplate.opsForValue().get(redisKey);
         if (cached != null && !cached.isBlank() && !"[]".equals(cached.trim())) {
             for (SupplierRisk r : JsonUtils.toSupplierRiskList(cached)) {
@@ -67,8 +67,7 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
         // 3) 缓存未命中 → 查数据库；有则直接回写缓存并返回
         List<SupplierRisk> dbRisks = supplierRiskMapper.searchRisks(supplierInfo.getId());
         if (dbRisks != null && !dbRisks.isEmpty()) {
-            // NEW: 雪崩防护 - TTL 抖动：1h ~ 1h+5min
-            long ttlSeconds = 3600 + new java.util.Random().nextInt(300);
+            long ttlSeconds = 3600 + new java.util.Random().nextInt(300); // 1h ~ 1h+5min
             stringRedisTemplate.opsForValue().set(
                     redisKey, JsonUtils.SupplierRiskListToJson(dbRisks),
                     ttlSeconds, TimeUnit.SECONDS
@@ -79,29 +78,27 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
             return dtoList;
         }
 
-        // 4) 数据库也没有 → 并发执行各策略（注意先判空再打印，避免 NPE）
+        // 4) 数据库也没有 → 并发执行各策略
         List<CompletableFuture<SupplierRisk>> futures = Arrays.stream(RiskType.values())
                 .map(type -> {
                     RiskStrategy strategy = riskFactory.get(type);
                     if (strategy == null) {
-                        // 没有该策略实现，直接返回一个已完成的 null future
                         return CompletableFuture.<SupplierRisk>completedFuture(null);
                     }
-                    // 可选：打印策略类型
-                    // System.out.println("[Strategy] " + strategy.getRiskType());
-
                     return CompletableFuture
                             .supplyAsync(() -> strategy.executeStrategy(supplierInfo), riskExecutor)
                             .orTimeout(2, TimeUnit.SECONDS)
                             .exceptionally(ex -> {
-                                // 单策略失败不影响整体
                                 System.err.println("[RiskTag Fail] type=" + type + ", reason=" + ex.getClass().getSimpleName());
                                 return null;
                             });
                 })
                 .collect(Collectors.toList());
 
-        // 5) 汇总结果 + 判重
+        // （可选）先等待全部完成（语义更清晰）
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        // 5) 汇总结果 + 判重（判重仍建议DB唯一索引兜底）
         List<SupplierRisk> newRisks = futures.stream()
                 .map(CompletableFuture::join)
                 .filter(Objects::nonNull)
@@ -110,7 +107,6 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
                         RiskType type = RiskType.valueOf(r.getTagName());
                         return !isExistRisk(r.getSupplierInfoId(), type);
                     } catch (Exception e) {
-                        // tagName 异常，防御性忽略
                         return false;
                     }
                 })
@@ -118,22 +114,21 @@ public class SupplierRiskServiceImpl implements SupplierRiskService {
 
         // 6) 入库并构建返回
         for (SupplierRisk r : newRisks) {
+            // 建议在 mapper 层使用 INSERT IGNORE 或 ON DUPLICATE KEY，结合唯一索引完全防重
             supplierRiskMapper.insert(r);
             dtoList.add(new SupplierRiskDTO(supplierInfo, r));
         }
 
-        // 7) 回写缓存
+        // 7) 回写缓存 —— 这里要写 newRisks（你原来误用了 dbRisks）
         if (!newRisks.isEmpty()) {
-            // NEW: 雪崩防护 - TTL 抖动：1h ~ 1h+5min
-            long ttlSeconds = 3600 + new java.util.Random().nextInt(300);
+            long ttlSeconds = 3600 + new java.util.Random().nextInt(300); // 1h ~ 1h+5min
             stringRedisTemplate.opsForValue().set(
-                    redisKey, JsonUtils.SupplierRiskListToJson(dbRisks),
+                    redisKey, JsonUtils.SupplierRiskListToJson(newRisks),
                     ttlSeconds, TimeUnit.SECONDS
             );
         } else {
-            // 没有命中：写“空缓存”，但用**短 TTL**（例如 5 分钟），避免长期污染
-            stringRedisTemplate.opsForValue()
-                    .set(redisKey, "[]", 5, TimeUnit.MINUTES);
+            // 没有命中：空值缓存 + 短 TTL 防穿透
+            stringRedisTemplate.opsForValue().set(redisKey, "[]", 5, TimeUnit.MINUTES);
         }
 
         return dtoList;
